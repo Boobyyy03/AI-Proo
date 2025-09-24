@@ -1,0 +1,452 @@
+{
+  "name": "ITInterviewPro Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "interview",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-start",
+      "name": "Webhook Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "interview-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "const jwt = require('jsonwebtoken');\nconst secretKey = $env.JWT_SECRET_KEY;\n\ntry {\n  const authHeader = $json.headers?.authorization;\n  if (!authHeader || !authHeader.startsWith('Bearer ')) {\n    return [{ json: { ...$json, isAuthenticated: false, authError: 'Missing or invalid authorization header' } }];\n  }\n  \n  const token = authHeader.split(' ')[1];\n  const decoded = jwt.verify(token, secretKey);\n  \n  return [{ json: { ...$json, user: decoded, isAuthenticated: true } }];\n} catch (error) {\n  return [{ json: { ...$json, isAuthenticated: false, authError: error.message } }];\n}"
+      },
+      "id": "jwt-verify",
+      "name": "JWT Verify",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.isAuthenticated}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "auth-check",
+      "name": "Auth Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"error\": \"Unauthorized\",\n  \"message\": \"Invalid or missing JWT token\"\n}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "unauthorized-response",
+      "name": "Unauthorized Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.action}}",
+              "operation": "equal",
+              "value2": "start_interview"
+            }
+          ]
+        }
+      },
+      "id": "action-router",
+      "name": "Action Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 120]
+    },
+    {
+      "parameters": {
+        "url": "https://api.perplexity.ai/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.PERPLEXITY_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.1-sonar-small-128k-online"
+            },
+            {
+              "name": "messages",
+              "value": "[\n  {\n    \"role\": \"system\",\n    \"content\": \"You are an expert IT interviewer. Generate a challenging interview question for a {{$json.specialization}} role at {{$json.difficulty}} level. The question should be practical and test real-world knowledge. Avoid repeating previous questions: {{$json.previous_questions_context || ''}}\"\n  },\n  {\n    \"role\": \"user\",\n    \"content\": \"Generate a technical interview question.\"\n  }\n]"
+            },
+            {
+              "name": "max_tokens",
+              "value": "300"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "generate-question",
+      "name": "Generate Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 120]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "interview_sessions",
+        "columns": "user_id, specialization, difficulty, start_time",
+        "additionalFields": {
+          "values": "{{$json.user.user_id}}, {{$json.specialization}}, {{$json.difficulty}}, NOW()"
+        }
+      },
+      "id": "save-session",
+      "name": "Save Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1340, 120],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred",
+          "name": "PostgreSQL ITInterviewPro"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"session_id\": \"{{$json.id}}\",\n  \"question\": \"{{$node['Generate Question'].json.choices[0].message.content}}\"\n}",
+        "options": {}
+      },
+      "id": "return-question",
+      "name": "Return Question",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.action}}",
+              "operation": "equal",
+              "value2": "save_result"
+            }
+          ]
+        }
+      },
+      "id": "save-result-check",
+      "name": "Save Result Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.perplexity.ai/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.PERPLEXITY_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "llama-3.1-sonar-small-128k-online"
+            },
+            {
+              "name": "messages",
+              "value": "[\n  {\n    \"role\": \"system\",\n    \"content\": \"You are an expert IT interviewer. Evaluate the following answer to an interview question. Provide a score from 1-10, detailed feedback, and suggestions for improvement. Format your response as JSON with fields: score, feedback, suggestions.\"\n  },\n  {\n    \"role\": \"user\",\n    \"content\": \"Question: {{$json.question}}\\n\\nAnswer: {{$json.user_answer}}\\n\\nPlease evaluate this answer.\"\n  }\n]"
+            },
+            {
+              "name": "max_tokens",
+              "value": "500"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "evaluate-answer",
+      "name": "Evaluate Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "interview_answers",
+        "columns": "session_id, user_answer, evaluation_score, evaluation_feedback, evaluation_suggestions, created_at",
+        "additionalFields": {
+          "values": "{{$json.session_id}}, {{$json.user_answer}}, {{$node['Evaluate Answer'].json.choices[0].message.content.score}}, {{$node['Evaluate Answer'].json.choices[0].message.content.feedback}}, {{$node['Evaluate Answer'].json.choices[0].message.content.suggestions}}, NOW()"
+        }
+      },
+      "id": "save-answer",
+      "name": "Save Answer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred",
+          "name": "PostgreSQL ITInterviewPro"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"score\": {{$node['Evaluate Answer'].json.choices[0].message.content.score}},\n  \"feedback\": \"{{$node['Evaluate Answer'].json.choices[0].message.content.feedback}}\",\n  \"suggestions\": \"{{$node['Evaluate Answer'].json.choices[0].message.content.suggestions}}\"\n}",
+        "options": {}
+      },
+      "id": "return-evaluation",
+      "name": "Return Evaluation",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.action}}",
+              "operation": "equal",
+              "value2": "get_progress"
+            }
+          ]
+        }
+      },
+      "id": "get-progress-check",
+      "name": "Get Progress Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "table": "user_progress",
+        "where": {
+          "conditions": [
+            {
+              "column": "user_id",
+              "condition": "equal",
+              "value": "={{$json.user.user_id}}"
+            }
+          ]
+        }
+      },
+      "id": "get-user-progress",
+      "name": "Get User Progress",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1120, 480],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-cred",
+          "name": "PostgreSQL ITInterviewPro"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"total_questions\": {{$json.total_questions || 0}},\n  \"correct_answers\": {{$json.correct_answers || 0}},\n  \"total_sessions\": {{$json.total_sessions || 0}},\n  \"average_score\": {{$json.average_score || 0}},\n  \"last_interview_date\": \"{{$json.last_interview_date || ''}}\"\n}",
+        "options": {}
+      },
+      "id": "return-progress",
+      "name": "Return Progress",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1340, 480]
+    }
+  ],
+  "connections": {
+    "Webhook Start": {
+      "main": [
+        [
+          {
+            "node": "JWT Verify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JWT Verify": {
+      "main": [
+        [
+          {
+            "node": "Auth Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Check": {
+      "main": [
+        [
+          {
+            "node": "Action Router",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unauthorized Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Action Router": {
+      "main": [
+        [
+          {
+            "node": "Generate Question",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Result Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Question": {
+      "main": [
+        [
+          {
+            "node": "Save Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Session": {
+      "main": [
+        [
+          {
+            "node": "Return Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Result Check": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Answer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Progress Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Answer": {
+      "main": [
+        [
+          {
+            "node": "Save Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Answer": {
+      "main": [
+        [
+          {
+            "node": "Return Evaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Progress Check": {
+      "main": [
+        [
+          {
+            "node": "Get User Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get User Progress": {
+      "main": [
+        [
+          {
+            "node": "Return Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {},
+  "versionId": "1"
+}
+
